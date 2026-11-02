@@ -26,6 +26,7 @@ import {
   type SafeArchiveRoot,
 } from "./transfer/fs-utils.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
+import { isErrnoCode } from "./utils/errno.js";
 import { DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS } from "./offline-sync-exclude-globs.js";
 
 export const OFFLINE_SYNC_SNAPSHOT_FORMAT = "remnic.offline-sync.snapshot.v1";
@@ -806,6 +807,18 @@ async function canReuseFastBaseFileStateFromDisk(
 
 async function readOfflineSyncFileRecord(
   options: OfflineSyncFileRecordOptions,
+): Promise<OfflineSyncFileRecord | null> {
+  try {
+    return await readPresentOfflineSyncFileRecord(options);
+  } catch (error) {
+    // A file removed between readdir and stat/hash is a race, not a corrupt corpus.
+    if (isErrnoCode(error, "ENOENT")) return null;
+    throw error;
+  }
+}
+
+async function readPresentOfflineSyncFileRecord(
+  options: OfflineSyncFileRecordOptions,
 ): Promise<OfflineSyncFileRecord> {
   throwIfOfflineSyncAborted(options.signal);
   const relPath = validateArchiveRelativePath(options.relPath, "offlineSyncFile.path");
@@ -924,7 +937,7 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
         continue;
       }
       if (!entry.isFile()) continue;
-      yield await readOfflineSyncFileRecord({
+      const record = await readOfflineSyncFileRecord({
         root,
         relPath: relPosix,
         filePath: abs,
@@ -933,6 +946,7 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
         readFileDigest: options.readFileDigest,
         signal: options.signal,
       });
+      if (record) yield record;
     }
   }
 
@@ -1050,7 +1064,7 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
         files.push(baseEntry);
         continue;
       }
-      files.push(await readOfflineSyncFileRecord({
+      const record = await readOfflineSyncFileRecord({
         root,
         relPath: relPosix,
         filePath: abs,
@@ -1058,7 +1072,8 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
         readFile: options.readFile,
         readFileDigest: options.readFileDigest,
         signal: options.signal,
-      }));
+      });
+      if (record) files.push(record);
     }
   }
 
@@ -1130,7 +1145,7 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
       throw error;
     });
     if (!st || st.isSymbolicLink() || !st.isFile()) continue;
-    files.push(await readOfflineSyncFileRecord({
+    const record = await readOfflineSyncFileRecord({
       root,
       relPath,
       filePath,
@@ -1138,7 +1153,8 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
       readFile: options.readFile,
       readFileDigest: options.readFileDigest,
       signal: options.signal,
-    }));
+    });
+    if (record) files.push(record);
   }
   throwIfOfflineSyncAborted(options.signal);
 
